@@ -1,0 +1,55 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "openrouter/openai/gpt-5.6-luna",
+  "permission": "allow",
+  "provider": {
+    "openrouter": {
+      "options": {
+        "baseURL": "http://host.docker.internal:8040/openrouter/api/v1",
+        "apiKey": "14agentbox-sandbox-token"
+      },
+      "models": {
+        "openai/gpt-5.6-luna": {},
+        "xiaomi/mimo-v2.6-pro": {
+          "name": "Xiaomi: MiMo-V2.6-Pro",
+          "tool_call": true,
+          "reasoning": true,
+          "limit": {
+            "context": 1048576,
+            "output": 131072
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image",
+              "audio",
+              "video"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        }
+      }
+    },
+    "openai": {
+      "options": {
+        "baseURL": "http://host.docker.internal:8040/openai/v1",
+        "apiKey": "14agentbox-sandbox-token"
+      }
+    },
+    "google": {
+      "options": {
+        "baseURL": "http://host.docker.internal:8040/google",
+        "apiKey": "14agentbox-sandbox-token"
+      }
+    }
+  },
+  "mcp": {
+    "exa": {
+      "type": "remote",
+      "url": "http://host.docker.internal:8040/mcp/exa",
+      "enabled": true
+    }
+  }
+}

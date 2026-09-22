@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# 14agentbox: Centralized Multi-Project Agent Devbox Runner
+# Works on macOS, Linux, and Git Bash.
+# Provides:
+# - Zero-Trust Host Credential Proxying
+# - Persistent Basebox with Smart Delta Project Caching
+# - Per-(Folder + Git Branch) Host Session Isolation
+# - Ephemeral Container Lifecycle (--rm)
+# ==============================================================================
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+PROXY_PID=""
+COMPOSE_SERVICES=()
+PROJECT_DIR=""
+
+cleanup() {
+  if [ -n "$PROXY_PID" ]; then
+    kill "$PROXY_PID" 2>/dev/null || true
+  fi
+  if [ ${#COMPOSE_SERVICES[@]} -gt 0 ] && [ -n "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/docker-compose.yml" ]; then
+    echo ""
+    echo "[14agentbox] Tearing down project compose dependencies (${COMPOSE_SERVICES[*]})..."
+    docker compose -f "$PROJECT_DIR/docker-compose.yml" down --remove-orphans >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+# ------------------------------------------------------------------------------
+# 1. Parse Arguments & Flags
+# ------------------------------------------------------------------------------
+DIRECT_ENV=0
+TARGET_PATH=""
+CMD=()
+
+show_help() {
+  cat << EOF
+Usage: 14agentbox [OPTIONS] [PROJECT_DIR] [--] [COMMAND...]
+
+Options:
+  --build-base     Build or rebuild the 14agentbox:base image
+  --clean          Reset cached session state for the specified project/branch
+  --sessions       List all cached project sessions on this machine
+  --direct-env     Bypass Zero-Trust proxy and inject host secrets directly as -e
+  -h, --help       Show this help message
+
+Examples:
+  14agentbox                             # Run in current directory, drop into bash
+  14agentbox /path/to/project            # Run in target directory, drop into bash
+  14agentbox /path/to/project agy        # Run Antigravity CLI in target project
+  14agentbox /path/to/project opencode   # Run OpenCode in target project
+  14agentbox --clean /path/to/project    # Reset session cache for target project
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    --build-base)
+      echo "[14agentbox] Building persistent basebox..."
+      COMMIT=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || shasum -a 256 "$SCRIPT_DIR/Dockerfile" | head -c 8)
+      BASE_TAG="14agentbox:base-${COMMIT}"
+      docker build -t "$BASE_TAG" "$SCRIPT_DIR"
+      docker tag "$BASE_TAG" "14agentbox:base"
+      echo "[14agentbox] Basebox successfully built: $BASE_TAG (tagged as 14agentbox:base)"
+      exit 0
+      ;;
+    --sessions)
+      SESS_BASE="$HOME/.14agentbox/sessions"
+      echo "[14agentbox] Cached project sessions in $SESS_BASE:"
+      if [ -d "$SESS_BASE" ]; then
+        du -sh "$SESS_BASE"/*/* 2>/dev/null || echo "No active sessions found."
+      else
+        echo "No sessions directory found."
+      fi
+      exit 0
+      ;;
+    --clean)
+      shift
+      TARGET="${1:-.}"
+      RESOLVED="$(cd "$TARGET" && pwd -P)"
+      P_NAME="$(basename "$RESOLVED")"
+      P_HASH=$(printf '%s' "$RESOLVED" | tr '[:upper:]' '[:lower:]' | shasum -a 256 | head -c 10)
+      B_NAME=$(git -C "$RESOLVED" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "default")
+      S_BRANCH=$(printf '%s' "$B_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
+      SESS_DIR="$HOME/.14agentbox/sessions/${P_NAME}-${P_HASH}/${S_BRANCH}"
+      if [ -d "$SESS_DIR" ]; then
+        rm -rf "$SESS_DIR"
+        echo "[14agentbox] Cleaned session cache for ${P_NAME} (${S_BRANCH}): $SESS_DIR"
+      else
+        echo "[14agentbox] No session cache found for ${P_NAME} at $SESS_DIR"
+      fi
+      exit 0
+      ;;
+    --direct-env)
+      DIRECT_ENV=1
+      shift
+      ;;
+    --)
+      shift
+      CMD=("$@")
+      break
+      ;;
+    *)
+      if [ -z "$TARGET_PATH" ] && [ -d "$1" ]; then
+        TARGET_PATH="$1"
+        shift
+      else
+        CMD+=("$1")
+        shift
+      fi
+      ;;
+  esac
+done
+
+if [ -z "$TARGET_PATH" ]; then
+  TARGET_PATH="."
+fi
+
+PROJECT_DIR="$(cd "$TARGET_PATH" && pwd -P)"
+PROJECT_NAME="$(basename "$PROJECT_DIR")"
+PATH_HASH=$(printf '%s' "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]' | shasum -a 256 | head -c 10)
+BRANCH_NAME=$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "default")
+SAFE_BRANCH=$(printf '%s' "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
+
+# ------------------------------------------------------------------------------
+# 2. Basebox & Smart Delta Image Resolution
+# ------------------------------------------------------------------------------
+AGENTBOX_COMMIT=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || shasum -a 256 "$SCRIPT_DIR/Dockerfile" | head -c 8)
+BASE_TAG="14agentbox:base-${AGENTBOX_COMMIT}"
+
+if ! docker image inspect "$BASE_TAG" >/dev/null 2>&1; then
+  echo "[14agentbox] Basebox image not found. Building basebox (${BASE_TAG})..."
+  docker build -t "$BASE_TAG" "$SCRIPT_DIR"
+  docker tag "$BASE_TAG" "14agentbox:base"
+fi
+
+if [ -f "$PROJECT_DIR/14agentbox.Dockerfile" ]; then
+  DOCKERFILE_HASH=$(shasum -a 256 "$PROJECT_DIR/14agentbox.Dockerfile" | head -c 10)
+  IMAGE_TAG="14agentbox-${PROJECT_NAME}:${AGENTBOX_COMMIT}-${DOCKERFILE_HASH}"
+
+  if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+    echo "[14agentbox] Building project delta layer on top of basebox (${IMAGE_TAG})..."
+    docker build --build-arg BASE_IMAGE="$BASE_TAG" -f "$PROJECT_DIR/14agentbox.Dockerfile" -t "$IMAGE_TAG" "$PROJECT_DIR"
+  else
+    echo "[14agentbox] Using cached project image (${IMAGE_TAG})"
+  fi
+else
+  IMAGE_TAG="$BASE_TAG"
+fi
+
+# ------------------------------------------------------------------------------
+# 3. Parse Downstream 14agentbox.json (Explicit Networking & Ports)
+# ------------------------------------------------------------------------------
+DOCKER_ARGS=()
+FORWARD_RULES=""
+
+if [ -f "$PROJECT_DIR/14agentbox.json" ]; then
+  # Parse with Python standard library
+  eval "$(python3 - "$PROJECT_DIR/14agentbox.json" "$PROJECT_NAME" << 'EOF'
+import json, sys, shlex
+
+try:
+    with open(sys.argv[1], 'r', encoding='utf-8') as f:
+        cfg = json.load(f)
+except Exception:
+    cfg = {}
+
+project_name = sys.argv[2] if len(sys.argv) > 2 else ""
+compose_services = cfg.get("compose_services", [])
+ports = cfg.get("ports", [])
+network = cfg.get("network", "")
+links = cfg.get("links", [])
+extra_hosts = cfg.get("extra_hosts", [])
+forward_ports = cfg.get("forward_ports", [])
+env_vars = cfg.get("env", {})
+
+out = []
+if compose_services:
+    out.append(f'COMPOSE_SERVICES=({" ".join(shlex.quote(str(s)) for s in compose_services)})')
+for p in ports:
+    out.append(f'DOCKER_ARGS+=("-p" {shlex.quote(str(p))})')
+if network:
+    proj_label = f'--label com.docker.compose.project={shlex.quote(str(project_name))}' if project_name else ''
+    out.append(f'docker network inspect {shlex.quote(str(network))} >/dev/null 2>&1 || docker network create --label com.docker.compose.network=default {proj_label} {shlex.quote(str(network))} >/dev/null 2>&1 || true')
+    out.append(f'DOCKER_ARGS+=("--network" {shlex.quote(str(network))})')
+for l in links:
+    out.append(f'DOCKER_ARGS+=("--link" {shlex.quote(str(l))})')
+for h in extra_hosts:
+    out.append(f'DOCKER_ARGS+=("--add-host" {shlex.quote(str(h))})')
+if forward_ports:
+    rules = ",".join(str(x) for x in forward_ports)
+    out.append(f'FORWARD_RULES={shlex.quote(rules)}')
+for k, v in env_vars.items():
+    out.append(f'DOCKER_ARGS+=("-e" {shlex.quote(f"{k}={v}")})')
+
+print("\n".join(out))
+EOF
+)"
+fi
+
+if [ ${#COMPOSE_SERVICES[@]} -gt 0 ] && [ -f "$PROJECT_DIR/docker-compose.yml" ]; then
+  echo "[14agentbox] Starting project compose dependencies (${COMPOSE_SERVICES[*]})..."
+  docker compose -f "$PROJECT_DIR/docker-compose.yml" up -d "${COMPOSE_SERVICES[@]}"
+fi
+
+if [ -n "$FORWARD_RULES" ]; then
+  DOCKER_ARGS+=("-e" "AGENTBOX_FORWARD_PORTS=${FORWARD_RULES}")
+fi
+
+# ------------------------------------------------------------------------------
+# 4. Zero-Trust Host Credential Proxy
+# ------------------------------------------------------------------------------
+ENV_FILE="$SCRIPT_DIR/.env"
+if [ "$DIRECT_ENV" -eq 1 ]; then
+  echo "[14agentbox] Direct environment mode active (bypassing Zero-Trust proxy)."
+  if [ -f "$ENV_FILE" ]; then
+    DOCKER_ARGS+=("--env-file" "$ENV_FILE")
+  fi
+else
+  # Start local auth proxy on host
+  if [ -f "$ENV_FILE" ]; then
+    if command -v lsof >/dev/null 2>&1; then
+      lsof -ti :8040 | xargs kill -9 >/dev/null 2>&1 || true
+    fi
+    echo "[14agentbox] Starting Zero-Trust Credential Proxy on host..."
+    python3 "$SCRIPT_DIR/proxy.py" --env-file "$ENV_FILE" --port 8040 > "$SCRIPT_DIR/proxy.log" 2>&1 &
+    PROXY_PID=$!
+    # Brief pause to allow proxy port binding
+    sleep 0.5
+  fi
+fi
+
+# ------------------------------------------------------------------------------
+# 5. Host Session Isolation (Folder + Git Branch)
+# ------------------------------------------------------------------------------
+SESSION_DIR="$HOME/.14agentbox/sessions/${PROJECT_NAME}-${PATH_HASH}/${SAFE_BRANCH}"
+mkdir -p "$SESSION_DIR/opencode" "$SESSION_DIR/antigravity"
+touch "$SESSION_DIR/bash_history"
+
+echo "[14agentbox] Launching devbox for ${PROJECT_NAME} (branch: ${SAFE_BRANCH})"
+echo "[14agentbox] Session cache: ${SESSION_DIR}"
+
+# ------------------------------------------------------------------------------
+# 6. Execute Ephemeral Container (--rm)
+# ------------------------------------------------------------------------------
+CONTAINER_NAME="14agentbox-${PROJECT_NAME}-${SAFE_BRANCH}-$$"
+
+EXEC_CMD=()
+if [ ${#CMD[@]} -gt 0 ]; then
+  EXEC_CMD=("${CMD[@]}")
+else
+  EXEC_CMD=("/bin/bash")
+fi
+
+docker run --rm -it \
+  --name "$CONTAINER_NAME" \
+  --add-host host.docker.internal:host-gateway \
+  -v "$PROJECT_DIR:/workspace" \
+  -v "$SESSION_DIR/opencode:/home/dev/.local" \
+  -v "$SESSION_DIR/antigravity:/home/dev/.gemini" \
+  -v "$SESSION_DIR/bash_history:/home/dev/.bash_history" \
+  ${DOCKER_ARGS[@]+"${DOCKER_ARGS[@]}"} \
+  "$IMAGE_TAG" \
+  "${EXEC_CMD[@]}"
