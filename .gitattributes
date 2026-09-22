@@ -1,4 +1,5 @@
-* text=auto eol=lf
+* text=auto
 *.sh text eol=lf
 14agentbox text eol=lf
-docker/* text eol=lf
+docker/agy-wrapper.sh text eol=lf
+docker/entrypoint.sh text eol=lf

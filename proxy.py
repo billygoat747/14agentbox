@@ -68,8 +68,9 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         """
         Map incoming request path to upstream target URL and inject appropriate secret headers.
         """
-        sys.stderr.write(f"[proxy log] Request path: {path}\n")
-        sys.stderr.flush()
+        if getattr(self.server, "log_requests", False):
+            sys.stderr.write(f"[proxy log] Request path: {path}\n")
+            sys.stderr.flush()
         env = self.server.secrets
         headers = {}
 
@@ -156,7 +157,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             resp = body_stream_or_bytes
             try:
                 while True:
-                    chunk = resp.read1(512) if hasattr(resp, "read1") else resp.read(512)
+                    chunk = resp.read1(8192) if hasattr(resp, "read1") else resp.read(8192)
                     if not chunk:
                         break
                     self.wfile.write(chunk)
@@ -213,12 +214,14 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self._send_proxy_response(resp.status, resp.getheaders(), resp)
         except urllib.error.HTTPError as e:
             err_body = e.read()
-            sys.stderr.write(f"[proxy log] Upstream HTTP error {e.code}: {err_body.decode('utf-8', 'ignore')}\n")
-            sys.stderr.flush()
+            if getattr(self.server, "log_requests", False):
+                sys.stderr.write(f"[proxy log] Upstream HTTP error {e.code}: {err_body.decode('utf-8', 'ignore')}\n")
+                sys.stderr.flush()
             self._send_proxy_response(e.code, e.headers.items(), err_body)
         except Exception as e:
-            sys.stderr.write(f"[proxy log] Gateway error: {str(e)}\n")
-            sys.stderr.flush()
+            if getattr(self.server, "log_requests", False):
+                sys.stderr.write(f"[proxy log] Gateway error: {str(e)}\n")
+                sys.stderr.flush()
             self.send_response(502)
             self.send_header("Content-Type", "application/json")
             err_msg = f'{{"error": "14agentbox proxy gateway error", "details": "{str(e)}"}}\n'.encode("utf-8")
@@ -237,6 +240,7 @@ def main():
     parser.add_argument("--host", default=DEFAULT_HOST, help="Host to bind (default 0.0.0.0)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to bind (default 8040)")
     parser.add_argument("--env-file", default=None, help="Path to .env file containing host secrets")
+    parser.add_argument("--log-requests", action="store_true", help="Log each proxied request path and upstream errors to stderr (default: quiet)")
     args = parser.parse_args()
 
     env_file = args.env_file
@@ -248,6 +252,7 @@ def main():
 
     server = ThreadedHTTPServer((args.host, args.port), ProxyHandler)
     server.secrets = secrets
+    server.log_requests = args.log_requests
 
     print(f"[14agentbox proxy] Listening on http://{args.host}:{args.port} (loaded secrets from {env_file})", flush=True)
 

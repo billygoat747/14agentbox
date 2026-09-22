@@ -11,6 +11,7 @@ param (
     [switch]$Clean,
     [switch]$Sessions,
     [switch]$DirectEnv,
+    [switch]$ProxyLogRequests,
     [string]$TargetDir = "",
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Command
@@ -19,21 +20,36 @@ param (
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# NOTE: Windows PowerShell 5.1 has no $PSNativeCommandUseErrorActionPreference
+# (PS 7.4+ only), so native-command probing must be wrapped explicitly.
+# Invoke-NativeProbe runs a native command (git/docker) whose non-zero exit
+# or stderr output is expected and must NOT abort the script. Returns the
+# command output; caller checks $LASTEXITCODE afterwards.
+function Invoke-NativeProbe([scriptblock]$Probe) {
+    $oldEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    try { & $Probe } finally { $ErrorActionPreference = $oldEAP }
+}
+
+# Assert-LastExitCode aborts with a clear message when the previous native
+# command failed. Call immediately after docker build/tag/network commands.
+function Assert-LastExitCode([string]$Message) {
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error $Message
+        exit 1
+    }
+}
+
 # 1. Handle Utilities
 if ($BuildBase) {
     Write-Host "[14agentbox] Building persistent basebox..."
-    $oldEAP = $ErrorActionPreference
-    $ErrorActionPreference = "SilentlyContinue"
-    $Commit = git -C "$ScriptDir" rev-parse --short HEAD 2>$null
-    $ErrorActionPreference = $oldEAP
+    $Commit = Invoke-NativeProbe { git -C "$ScriptDir" rev-parse --short HEAD 2>$null }
     if (-not $Commit) { $Commit = "latest" }
     $BaseTag = "14agentbox:base-${Commit}"
     docker build -t "$BaseTag" "$ScriptDir"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "[14agentbox] Basebox image build failed."
-        exit 1
-    }
+    Assert-LastExitCode "[14agentbox] Basebox image build failed."
     docker tag "$BaseTag" "14agentbox:base"
+    Assert-LastExitCode "[14agentbox] Failed to tag basebox image."
     Write-Host "[14agentbox] Basebox successfully built: $BaseTag"
     exit 0
 }
@@ -63,10 +79,7 @@ $Sha256 = [System.Security.Cryptography.SHA256]::Create()
 $PathHashBytes = $Sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($NormalizedPath))
 $PathHash = ([System.BitConverter]::ToString($PathHashBytes) -replace '-').ToLower().Substring(0, 10)
 
-$oldEAP = $ErrorActionPreference
-$ErrorActionPreference = "SilentlyContinue"
-$BranchName = git -C "$TargetDir" rev-parse --abbrev-ref HEAD 2>$null
-$ErrorActionPreference = $oldEAP
+$BranchName = Invoke-NativeProbe { git -C "$TargetDir" rev-parse --abbrev-ref HEAD 2>$null }
 if (-not $BranchName) { $BranchName = "default" }
 $SafeBranch = $BranchName -replace '[^a-zA-Z0-9._-]', '_'
 
@@ -82,22 +95,17 @@ if ($Clean) {
 }
 
 # 2. Basebox & Smart Delta Image Resolution
-$oldEAP = $ErrorActionPreference
-$ErrorActionPreference = "SilentlyContinue"
-$BoxCommit = git -C "$ScriptDir" rev-parse --short HEAD 2>$null
+$BoxCommit = Invoke-NativeProbe { git -C "$ScriptDir" rev-parse --short HEAD 2>$null }
 if (-not $BoxCommit) { $BoxCommit = "latest" }
 $BaseTag = "14agentbox:base-${BoxCommit}"
 
-$BaseInspect = docker image inspect "$BaseTag" 2>$null
-$ErrorActionPreference = $oldEAP
+$null = Invoke-NativeProbe { docker image inspect "$BaseTag" 2>$null }
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[14agentbox] Basebox image not found. Building ($BaseTag)..."
     docker build -t "$BaseTag" "$ScriptDir"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "[14agentbox] Basebox image build failed."
-        exit 1
-    }
+    Assert-LastExitCode "[14agentbox] Basebox image build failed."
     docker tag "$BaseTag" "14agentbox:base"
+    Assert-LastExitCode "[14agentbox] Failed to tag basebox image."
 }
 
 $ProjDocker = Join-Path $TargetDir "14agentbox.Dockerfile"
@@ -107,17 +115,11 @@ if (Test-Path $ProjDocker) {
     $DockerHash = ([System.BitConverter]::ToString($DockerHashBytes) -replace '-').ToLower().Substring(0, 10)
     $ImageTag = "14agentbox-${ProjectName}:${BoxCommit}-${DockerHash}"
 
-    $oldEAP = $ErrorActionPreference
-    $ErrorActionPreference = "SilentlyContinue"
-    $ProjInspect = docker image inspect "$ImageTag" 2>$null
-    $ErrorActionPreference = $oldEAP
+    $null = Invoke-NativeProbe { docker image inspect "$ImageTag" 2>$null }
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[14agentbox] Building project delta layer on top of basebox ($ImageTag)..."
         docker build --build-arg BASE_IMAGE="$BaseTag" -f "$ProjDocker" -t "$ImageTag" "$TargetDir"
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "[14agentbox] Project image build failed."
-            exit 1
-        }
+        Assert-LastExitCode "[14agentbox] Project image build failed."
     } else {
         Write-Host "[14agentbox] Using cached project image ($ImageTag)"
     }
@@ -136,15 +138,9 @@ if (Test-Path $ProjJson) {
         foreach ($p in $Config.ports) { $DockerArgs += @("-p", $p) }
     }
     if ($Config.network) {
-        $oldEAP = $ErrorActionPreference
-        $ErrorActionPreference = "SilentlyContinue"
-        $null = docker network inspect $Config.network 2>$null
-        $ErrorActionPreference = $oldEAP
+        $null = Invoke-NativeProbe { docker network inspect $Config.network 2>$null }
         if ($LASTEXITCODE -ne 0) {
-            $oldEAP = $ErrorActionPreference
-            $ErrorActionPreference = "SilentlyContinue"
-            docker network create --label "com.docker.compose.network=default" --label "com.docker.compose.project=$ProjectName" $Config.network 2>$null | Out-Null
-            $ErrorActionPreference = $oldEAP
+            Invoke-NativeProbe { docker network create --label "com.docker.compose.network=default" --label "com.docker.compose.project=$ProjectName" $Config.network 2>$null } | Out-Null
         }
         $DockerArgs += @("--network", $Config.network)
     }
@@ -176,10 +172,18 @@ $EnvFile = Join-Path $ScriptDir ".env"
 try {
     if (-not $DirectEnv -and (Test-Path $EnvFile)) {
         Write-Host "[14agentbox] Starting Zero-Trust Credential Proxy on host..."
-        $ProxyLog = Join-Path $ScriptDir "proxy.log"
-        $ProxyErrLog = Join-Path $ScriptDir "proxy.err.log"
+        # Keep proxy stdout/stderr out of the interactive console (they would
+        # stomp full-screen TUIs like OpenCode). PS 5.1 Start-Process requires
+        # distinct redirect files, and logs live under $env:TEMP so the repo
+        # checkout stays clean (*.log is also gitignored as a backstop).
+        $ProxyLogDir = Join-Path $env:TEMP "14agentbox"
+        New-Item -ItemType Directory -Force -Path $ProxyLogDir | Out-Null
+        $ProxyLog = Join-Path $ProxyLogDir "proxy.log"
+        $ProxyErrLog = Join-Path $ProxyLogDir "proxy.err.log"
+        $ProxyArgs = "`"$ScriptDir\proxy.py`" --env-file `"$EnvFile`" --port 8040"
+        if ($ProxyLogRequests) { $ProxyArgs += " --log-requests" }
         $ProxyProcess = Start-Process -FilePath "python" `
-            -ArgumentList "`"$ScriptDir\proxy.py`" --env-file `"$EnvFile`" --port 8040" `
+            -ArgumentList $ProxyArgs `
             -RedirectStandardOutput "$ProxyLog" `
             -RedirectStandardError "$ProxyErrLog" `
             -PassThru -NoNewWindow
@@ -220,9 +224,6 @@ try {
     }
     if ($Config.compose_services -and (Test-Path "$TargetDir\docker-compose.yml")) {
         Write-Host "[14agentbox] Tearing down project compose dependencies..."
-        $oldEAP = $ErrorActionPreference
-        $ErrorActionPreference = "SilentlyContinue"
-        docker compose -f "$TargetDir\docker-compose.yml" down --remove-orphans 2>$null | Out-Null
-        $ErrorActionPreference = $oldEAP
+        Invoke-NativeProbe { docker compose -f "$TargetDir\docker-compose.yml" down --remove-orphans 2>$null } | Out-Null
     }
 }
