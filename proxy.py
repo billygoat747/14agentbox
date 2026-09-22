@@ -68,7 +68,8 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         """
         Map incoming request path to upstream target URL and inject appropriate secret headers.
         """
-        print(f"[DEBUG proxy] Request path: {path}", flush=True)
+        sys.stderr.write(f"[proxy log] Request path: {path}\n")
+        sys.stderr.flush()
         env = self.server.secrets
         headers = {}
 
@@ -118,6 +119,51 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         # Unknown prefix: return 404
         return None, None, False
 
+    def _send_proxy_response(self, status, upstream_headers, body_stream_or_bytes):
+        excluded = {
+            "transfer-encoding",
+            "content-encoding",
+            "content-length",
+            "connection",
+            "server",
+            "keep-alive",
+        }
+
+        self.send_response(status)
+
+        headers_dict = {}
+        for header, value in upstream_headers:
+            h_lower = header.lower()
+            if h_lower not in excluded:
+                headers_dict[h_lower] = value
+                self.send_header(header, value)
+
+        if isinstance(body_stream_or_bytes, bytes):
+            self.send_header("Content-Length", str(len(body_stream_or_bytes)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body_stream_or_bytes)
+            self.wfile.flush()
+        else:
+            is_sse = "text/event-stream" in headers_dict.get("content-type", "").lower()
+            if is_sse:
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+            else:
+                self.send_header("Connection", "close")
+            self.end_headers()
+
+            resp = body_stream_or_bytes
+            try:
+                while True:
+                    chunk = resp.read1(512) if hasattr(resp, "read1") else resp.read(512)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except Exception:
+                pass
+
     def _handle_proxy(self):
         target_url, injected_headers, is_health = self._resolve_target(self.path)
 
@@ -149,6 +195,9 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             if k.lower() not in ("host", "authorization", "x-api-key", "x-goog-api-key", "accept-encoding"):
                 out_headers[k] = v
 
+        # Request uncompressed response from upstream to avoid gzip/length stream mismatches
+        out_headers["Accept-Encoding"] = "identity"
+
         # Inject real secrets
         out_headers.update(injected_headers)
 
@@ -160,45 +209,16 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                self.send_response(resp.status)
-                has_content_length = False
-                for header, value in resp.getheaders():
-                    # Strip hop-by-hop headers
-                    if header.lower() not in ("transfer-encoding", "connection", "content-encoding"):
-                        if header.lower() == "content-length":
-                            has_content_length = True
-                        self.send_header(header, value)
-
-                if not has_content_length:
-                    self.send_header("Connection", "close")
-                    self.close_connection = True
-
-                self.end_headers()
-
-                # Stream response chunks (supports SSE with low latency)
-                while True:
-                    chunk = resp.read1(4096) if hasattr(resp, "read1") else resp.read(1024)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    self.wfile.flush()
-
-
+            resp = urllib.request.urlopen(req, timeout=120)
+            self._send_proxy_response(resp.status, resp.getheaders(), resp)
         except urllib.error.HTTPError as e:
             err_body = e.read()
-            print(f"[DEBUG proxy] Upstream HTTP error {e.code}: {err_body.decode('utf-8', 'ignore')}", flush=True)
-            self.send_response(e.code)
-            for header, value in e.headers.items():
-                if header.lower() not in ("transfer-encoding", "connection"):
-                    self.send_header(header, value)
-            self.end_headers()
-            if err_body:
-                self.wfile.write(err_body)
-                self.wfile.flush()
-
-
+            sys.stderr.write(f"[proxy log] Upstream HTTP error {e.code}: {err_body.decode('utf-8', 'ignore')}\n")
+            sys.stderr.flush()
+            self._send_proxy_response(e.code, e.headers.items(), err_body)
         except Exception as e:
+            sys.stderr.write(f"[proxy log] Gateway error: {str(e)}\n")
+            sys.stderr.flush()
             self.send_response(502)
             self.send_header("Content-Type", "application/json")
             err_msg = f'{{"error": "14agentbox proxy gateway error", "details": "{str(e)}"}}\n'.encode("utf-8")

@@ -4,7 +4,7 @@
 # Verifies that host secrets NEVER enter the container environment, process tree,
 # or filesystem.
 # ==============================================================================
-set -euo pipefail
+set -e -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 BOX_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"

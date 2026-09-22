@@ -176,7 +176,13 @@ $EnvFile = Join-Path $ScriptDir ".env"
 try {
     if (-not $DirectEnv -and (Test-Path $EnvFile)) {
         Write-Host "[14agentbox] Starting Zero-Trust Credential Proxy on host..."
-        $ProxyProcess = Start-Process -FilePath "python" -ArgumentList "`"$ScriptDir\proxy.py`" --env-file `"$EnvFile`" --port 8040" -PassThru -NoNewWindow
+        $ProxyLog = Join-Path $ScriptDir "proxy.log"
+        $ProxyErrLog = Join-Path $ScriptDir "proxy.err.log"
+        $ProxyProcess = Start-Process -FilePath "python" `
+            -ArgumentList "`"$ScriptDir\proxy.py`" --env-file `"$EnvFile`" --port 8040" `
+            -RedirectStandardOutput "$ProxyLog" `
+            -RedirectStandardError "$ProxyErrLog" `
+            -PassThru -NoNewWindow
         Start-Sleep -Milliseconds 400
     } elseif ($DirectEnv -and (Test-Path $EnvFile)) {
         Write-Host "[14agentbox] Direct environment mode active."
