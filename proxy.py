@@ -8,9 +8,11 @@ from the host .env file, ensuring secrets never enter the Docker container.
 
 import argparse
 import http.server
+import json
 import os
 import socketserver
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +20,35 @@ import urllib.request
 # Default listen configuration
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8040
+
+# Env vars that hold each provider's key. Only whether a key is present is ever
+# reported to the container (via /providers); key values never leave the host.
+PROVIDER_KEYS = {
+    "openrouter": ["OPENROUTER_API_KEY"],
+    "openai": ["OPENAI_API_KEY"],
+    "google": ["GOOGLEAI_API_KEY", "GEMINI_API_KEY"],
+    "litellm": ["LITELLM_API_KEY"],
+    "exa": ["EXA_API_KEY"],
+}
+
+
+# Non-secret settings a provider also needs before it counts as configured.
+# Deployment-specific URLs live in the host .env so they stay out of git.
+PROVIDER_SETTINGS = {
+    "litellm": ["LITELLM_BASE_URL"],
+}
+
+
+def env_value(env, var):
+    return env.get(var) or os.environ.get(var, "")
+
+
+def configured_providers(env):
+    return {
+        name: any(env_value(env, var) for var in env_vars)
+        and all(env_value(env, var) for var in PROVIDER_SETTINGS.get(name, []))
+        for name, env_vars in PROVIDER_KEYS.items()
+    }
 
 
 def load_env(env_path):
@@ -64,6 +95,11 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _log(self, message):
+        if getattr(self.server, "log_requests", False):
+            sys.stderr.write(f"[proxy log] {message}\n")
+            sys.stderr.flush()
+
     def _resolve_target(self, path):
         """
         Map incoming request path to upstream target URL and inject appropriate secret headers.
@@ -93,6 +129,18 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             target_path = path[len("/openai"):]
             target_url = "https://api.openai.com" + target_path
             api_key = env.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            return target_url, headers, False
+
+        # LiteLLM routing: /litellm/* -> $LITELLM_BASE_URL/*
+        if path.startswith("/litellm/"):
+            base_url = env_value(env, "LITELLM_BASE_URL").rstrip("/")
+            if not base_url:
+                return None, None, False
+            target_path = path[len("/litellm"):]
+            target_url = base_url + target_path
+            api_key = env.get("LITELLM_API_KEY") or os.environ.get("LITELLM_API_KEY", "")
             if api_key:
                 headers["Authorization"] = f"Bearer {api_key}"
             return target_url, headers, False
@@ -141,17 +189,13 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         if isinstance(body_stream_or_bytes, bytes):
             self.send_header("Content-Length", str(len(body_stream_or_bytes)))
-            self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body_stream_or_bytes)
             self.wfile.flush()
         else:
-            is_sse = "text/event-stream" in headers_dict.get("content-type", "").lower()
-            if is_sse:
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("Connection", "keep-alive")
-            else:
-                self.send_header("Connection", "close")
+            # Streamed bodies (including SSE) have no known length, so they must be
+            # chunk-framed; otherwise HTTP/1.1 clients never see the response end.
+            self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
 
             resp = body_stream_or_bytes
@@ -160,12 +204,21 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                     chunk = resp.read1(8192) if hasattr(resp, "read1") else resp.read(8192)
                     if not chunk:
                         break
-                    self.wfile.write(chunk)
+                    self.wfile.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
                     self.wfile.flush()
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
             except Exception:
-                pass
+                self.close_connection = True
+            finally:
+                resp.close()
 
     def _handle_proxy(self):
+        if self.path == "/providers":
+            payload = json.dumps({"providers": configured_providers(self.server.secrets)}).encode("utf-8")
+            self._send_proxy_response(200, [("Content-Type", "application/json")], payload)
+            return
+
         target_url, injected_headers, is_health = self._resolve_target(self.path)
 
         if is_health:
@@ -189,6 +242,10 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         # Read request body
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length) if content_length > 0 else None
+        self._log(
+            f"{self.command} {self.path} content-length={self.headers.get('Content-Length')} "
+            f"transfer-encoding={self.headers.get('Transfer-Encoding')} body={len(body or b'')}B"
+        )
 
         # Build outbound headers
         out_headers = {}
@@ -210,8 +267,11 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         )
 
         try:
+            started = time.monotonic()
             resp = urllib.request.urlopen(req, timeout=120)
+            self._log(f"upstream {resp.status} after {time.monotonic() - started:.1f}s for {self.path}")
             self._send_proxy_response(resp.status, resp.getheaders(), resp)
+            self._log(f"finished {self.path} in {time.monotonic() - started:.1f}s")
         except urllib.error.HTTPError as e:
             err_body = e.read()
             if getattr(self.server, "log_requests", False):

@@ -100,7 +100,7 @@ Downstream projects declare their network attachments, container links, and port
   ],
   "network": "14software_default",
   "links": [
-    "idahosoftware-postgres:postgres"
+    "14software-postgres:postgres"
   ],
   "forward_ports": [
     "5432:postgres:5432"

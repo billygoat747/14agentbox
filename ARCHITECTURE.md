@@ -95,9 +95,18 @@ The proxy runs on the host during container execution:
 - Translates endpoints:
   - `/openrouter/*` -> `https://openrouter.ai/*` + `Authorization: Bearer <OPENROUTER_API_KEY>`
   - `/openai/*` -> `https://api.openai.com/*` + `Authorization: Bearer <OPENAI_API_KEY>`
+  - `/litellm/*` -> `<LITELLM_BASE_URL>/*` + `Authorization: Bearer <LITELLM_API_KEY>` (the base URL is set in the host `.env`, so deployment-specific URLs stay out of git)
   - `/google/*` -> `https://generativelanguage.googleapis.com/*` + `x-goog-api-key: <GOOGLEAI_API_KEY>`
   - `/mcp/exa/*` -> `https://mcp.exa.ai/*` + `x-api-key: <EXA_API_KEY>`
+- `/providers` reports which providers have a key in the host `.env` (booleans only, never key values).
 - Supports streaming Server-Sent Events (SSE) for real-time LLM token delivery.
+
+At container start, `docker/entrypoint.sh` queries `/providers` and LiteLLM's `/model/info`, then writes
+`~/.config/opencode/generated.json` (exported as `OPENCODE_CONFIG`):
+- Providers without a key are added to `disabled_providers`; the Exa MCP server is disabled without `EXA_API_KEY`.
+- LiteLLM chat models (with context/output limits) are listed automatically, so new models appear without a rebuild.
+- If the default model's provider is disabled, the default switches to a LiteLLM model.
+- If the proxy is unreachable (e.g. `--direct-env`), the baked-in `opencode.json` is used unchanged.
 - Shuts down when container execution terminates.
 
 ---

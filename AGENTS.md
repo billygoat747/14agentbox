@@ -43,6 +43,8 @@ If you are tasked with adding support for a new provider (e.g. Anthropic, Mistra
        headers["x-api-key"] = os.getenv("ANTHROPIC_API_KEY", "")
    ```
 
+   Also add the provider and its env var name(s) to `PROVIDER_KEYS` in `proxy.py`, so the container disables the provider when no key is configured. Use the same provider ID as in `opencode.json`.
+
 3. **Configure the Container Tool (`opencode.json` / MCP config)**:
    Point the tool's `baseURL` to `http://host.docker.internal:8040/<provider>` with a dummy API key:
    ```json

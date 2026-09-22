@@ -66,6 +66,14 @@ if ($Sessions) {
     exit 0
 }
 
+# PowerShell binds the first bare argument to -TargetDir, so `14agentbox opencode`
+# would treat "opencode" as a path. Like the bash runner, only accept it as the
+# project directory if it exists; otherwise it is the start of the command.
+if ($TargetDir -and -not (Test-Path -LiteralPath $TargetDir -PathType Container)) {
+    $Command = @($TargetDir) + @($Command | Where-Object { $_ })
+    $TargetDir = ""
+}
+
 # Resolve target project directory
 if (-not $TargetDir) {
     $TargetDir = (Get-Location).Path

@@ -48,4 +48,55 @@ if [ -n "${AGENTBOX_FORWARD_PORTS:-}" ]; then
     done
 fi
 
+# 4. Provider availability & LiteLLM model discovery (OpenCode)
+# The host proxy reports which providers have a key in the host .env (booleans
+# only). Providers without a key are disabled, and LiteLLM's chat models are
+# listed from its /model/info endpoint so new models appear without a rebuild.
+# If the proxy is unreachable (e.g. --direct-env), the baked-in config is used.
+PROXY_URL="${AGENTBOX_PROXY_URL:-http://host.docker.internal:8040}"
+BASE_CONFIG=/home/dev/.config/opencode/opencode.json
+GEN_CONFIG=/home/dev/.config/opencode/generated.json
+# Responses go through temp files: /model/info can be hundreds of KB, which
+# exceeds Linux's 128 KB limit for a single command-line argument.
+DISCOVERY_DIR=$(mktemp -d)
+if curl -fsS -m 3 -o "$DISCOVERY_DIR/providers.json" "$PROXY_URL/providers" 2>/dev/null; then
+    if [ "$(jq -r '.providers.litellm' "$DISCOVERY_DIR/providers.json")" != "true" ] \
+        || ! curl -fsS -m 10 -o "$DISCOVERY_DIR/model_info.json" "$PROXY_URL/litellm/model/info" 2>/dev/null; then
+        echo '{"data":[]}' > "$DISCOVERY_DIR/model_info.json"
+    fi
+    if jq -n --slurpfile p "$DISCOVERY_DIR/providers.json" --slurpfile info "$DISCOVERY_DIR/model_info.json" --slurpfile base "$BASE_CONFIG" '
+        $p[0].providers as $keys
+        | [($info[0].data // [])[] | select(.model_info.mode == "chat")] as $chat
+        | ([$keys | to_entries[] | select(.key != "exa" and .value != true) | .key]
+           + ["opencode"]
+           + (if ($chat | length) == 0 then ["litellm"] else [] end) | unique) as $disabled
+        | {
+            disabled_providers: $disabled,
+            provider: { litellm: { models: ($chat | map({
+                key: .model_name,
+                value: {
+                    name: .model_name,
+                    tool_call: (.model_info.supports_function_calling // false),
+                    reasoning: (.model_info.supports_reasoning // false),
+                    attachment: (.model_info.supports_vision // false),
+                    limit: {
+                        context: (.model_info.max_input_tokens // 128000),
+                        output: (.model_info.max_output_tokens // 4096)
+                    }
+                }
+            }) | from_entries) } },
+            mcp: { exa: { enabled: ($keys.exa == true) } }
+          }
+        | (($base[0].model // "") | split("/")[0]) as $default_provider
+        | if ($disabled | index($default_provider)) and ($chat | length) > 0 then
+              .model = "litellm/" + ((first($chat[] | select(.model_name | test("sonnet"))) // $chat[0]).model_name)
+          else . end
+    ' > "$GEN_CONFIG" 2>/dev/null; then
+        export OPENCODE_CONFIG="$GEN_CONFIG"
+    else
+        rm -f "$GEN_CONFIG"
+    fi
+fi
+rm -rf "$DISCOVERY_DIR"
+
 exec "$@"
