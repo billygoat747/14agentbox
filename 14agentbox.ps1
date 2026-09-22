@@ -22,10 +22,17 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 # 1. Handle Utilities
 if ($BuildBase) {
     Write-Host "[14agentbox] Building persistent basebox..."
+    $oldEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
     $Commit = git -C "$ScriptDir" rev-parse --short HEAD 2>$null
+    $ErrorActionPreference = $oldEAP
     if (-not $Commit) { $Commit = "latest" }
     $BaseTag = "14agentbox:base-${Commit}"
     docker build -t "$BaseTag" "$ScriptDir"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "[14agentbox] Basebox image build failed."
+        exit 1
+    }
     docker tag "$BaseTag" "14agentbox:base"
     Write-Host "[14agentbox] Basebox successfully built: $BaseTag"
     exit 0
@@ -56,7 +63,10 @@ $Sha256 = [System.Security.Cryptography.SHA256]::Create()
 $PathHashBytes = $Sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($NormalizedPath))
 $PathHash = ([System.BitConverter]::ToString($PathHashBytes) -replace '-').ToLower().Substring(0, 10)
 
+$oldEAP = $ErrorActionPreference
+$ErrorActionPreference = "SilentlyContinue"
 $BranchName = git -C "$TargetDir" rev-parse --abbrev-ref HEAD 2>$null
+$ErrorActionPreference = $oldEAP
 if (-not $BranchName) { $BranchName = "default" }
 $SafeBranch = $BranchName -replace '[^a-zA-Z0-9._-]', '_'
 
@@ -72,14 +82,21 @@ if ($Clean) {
 }
 
 # 2. Basebox & Smart Delta Image Resolution
+$oldEAP = $ErrorActionPreference
+$ErrorActionPreference = "SilentlyContinue"
 $BoxCommit = git -C "$ScriptDir" rev-parse --short HEAD 2>$null
 if (-not $BoxCommit) { $BoxCommit = "latest" }
 $BaseTag = "14agentbox:base-${BoxCommit}"
 
 $BaseInspect = docker image inspect "$BaseTag" 2>$null
+$ErrorActionPreference = $oldEAP
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[14agentbox] Basebox image not found. Building ($BaseTag)..."
     docker build -t "$BaseTag" "$ScriptDir"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "[14agentbox] Basebox image build failed."
+        exit 1
+    }
     docker tag "$BaseTag" "14agentbox:base"
 }
 
@@ -90,10 +107,17 @@ if (Test-Path $ProjDocker) {
     $DockerHash = ([System.BitConverter]::ToString($DockerHashBytes) -replace '-').ToLower().Substring(0, 10)
     $ImageTag = "14agentbox-${ProjectName}:${BoxCommit}-${DockerHash}"
 
+    $oldEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
     $ProjInspect = docker image inspect "$ImageTag" 2>$null
+    $ErrorActionPreference = $oldEAP
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[14agentbox] Building project delta layer on top of basebox ($ImageTag)..."
         docker build --build-arg BASE_IMAGE="$BaseTag" -f "$ProjDocker" -t "$ImageTag" "$TargetDir"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "[14agentbox] Project image build failed."
+            exit 1
+        }
     } else {
         Write-Host "[14agentbox] Using cached project image ($ImageTag)"
     }
@@ -112,9 +136,15 @@ if (Test-Path $ProjJson) {
         foreach ($p in $Config.ports) { $DockerArgs += @("-p", $p) }
     }
     if ($Config.network) {
+        $oldEAP = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
         $null = docker network inspect $Config.network 2>$null
+        $ErrorActionPreference = $oldEAP
         if ($LASTEXITCODE -ne 0) {
+            $oldEAP = $ErrorActionPreference
+            $ErrorActionPreference = "SilentlyContinue"
             docker network create --label "com.docker.compose.network=default" --label "com.docker.compose.project=$ProjectName" $Config.network 2>$null | Out-Null
+            $ErrorActionPreference = $oldEAP
         }
         $DockerArgs += @("--network", $Config.network)
     }
@@ -184,6 +214,9 @@ try {
     }
     if ($Config.compose_services -and (Test-Path "$TargetDir\docker-compose.yml")) {
         Write-Host "[14agentbox] Tearing down project compose dependencies..."
+        $oldEAP = $ErrorActionPreference
+        $ErrorActionPreference = "SilentlyContinue"
         docker compose -f "$TargetDir\docker-compose.yml" down --remove-orphans 2>$null | Out-Null
+        $ErrorActionPreference = $oldEAP
     }
 }

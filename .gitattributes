@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.sh text eol=lf
+14agentbox text eol=lf
+docker/* text eol=lf

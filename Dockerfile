@@ -32,7 +32,8 @@ RUN curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /usr
     && (test -e /usr/local/bin/antigravity && rm -f /usr/local/bin/antigravity || true) \
     && chmod 755 /usr/local/bin/agy-bin
 COPY docker/agy-wrapper.sh /usr/local/bin/agy
-RUN chmod 755 /usr/local/bin/agy \
+RUN sed -i 's/\r$//' /usr/local/bin/agy \
+    && chmod 755 /usr/local/bin/agy \
     && ln -s /usr/local/bin/agy /usr/local/bin/antigravity \
     && agy --version
 
@@ -52,7 +53,8 @@ COPY --chown=dev:dev opencode.json /home/dev/.config/opencode/opencode.json
 
 # Copy container entrypoint
 COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+    && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 USER dev
 WORKDIR /workspace
