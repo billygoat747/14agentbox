@@ -15,11 +15,24 @@ cp .env.example .env
 
 > **🔒 True Zero-Trust Guarantee**: Secrets in `.env` are read **exclusively on the host machine** by `proxy.py`. They are **never** passed into Docker or accessible by tools running inside the container.
 
-### 2. Run against Any Project
+### 2. (Optional) Install Globally to Run from Anywhere
+To run `14agentbox` from any folder on your Mac without specifying the path:
+```bash
+ln -s "$(pwd)/14agentbox" ~/.local/bin/14agentbox
+# or system-wide:
+# sudo ln -s "$(pwd)/14agentbox" /usr/local/bin/14agentbox
+```
+
+### 3. Run against Any Project
 Pass the target project path to the `14agentbox` runner:
 
 ```bash
-# macOS / Linux
+# From anywhere (if symlinked into PATH):
+14agentbox /path/to/my-project
+# or simply cd into the project and run:
+cd /path/to/my-project && 14agentbox
+
+# Or run directly from this repository:
 ./14agentbox /path/to/my-project
 
 # Windows PowerShell
