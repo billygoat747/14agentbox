@@ -7,6 +7,7 @@
 # - Ephemeral Container Lifecycle (--rm)
 # ==============================================================================
 param (
+    [switch]$Init,
     [switch]$BuildBase,
     [switch]$Clean,
     [switch]$Sessions,
@@ -41,6 +42,28 @@ function Assert-LastExitCode([string]$Message) {
 }
 
 # 1. Handle Utilities
+if ($Init) {
+    $ResolveTarget = if ($TargetDir) { (Resolve-Path -LiteralPath $TargetDir).Path } else { (Get-Location).Path }
+    $InitFile = Join-Path $ResolveTarget "14agentbox.json"
+    if (Test-Path $InitFile) {
+        Write-Error "[14agentbox] Error: $InitFile already exists."
+        exit 1
+    }
+    $Template = @'
+{
+  "$schema": "https://raw.githubusercontent.com/billygoat747/14agentbox/main/14agentbox.schema.json",
+  "ports": [],
+  "network": "",
+  "compose_services": [],
+  "forward_ports": [],
+  "env": {}
+}
+'@
+    Set-Content -Path $InitFile -Value $Template -Encoding UTF8
+    Write-Host "[14agentbox] Initialized $InitFile"
+    exit 0
+}
+
 if ($BuildBase) {
     Write-Host "[14agentbox] Building persistent basebox..."
     $Commit = Invoke-NativeProbe { git -C "$ScriptDir" rev-parse --short HEAD 2>$null }

@@ -104,14 +104,31 @@ USER dev
 
 ## 🌐 Explicit Network & Port Mapping: `14agentbox.json`
 
-Downstream projects declare their network attachments, container links, and port bindings in `14agentbox.json`:
+Downstream projects declare their network attachments, container links, and port bindings in `14agentbox.json`.
+
+You can scaffold a pre-configured template using `--init`:
+
+```bash
+# In the current directory:
+14agentbox --init
+
+# Or targeting a specific folder:
+14agentbox --init /path/to/my-project
+# (Windows: .\14agentbox.ps1 -Init -TargetDir "C:\path\to\my-project")
+```
+
+Example `14agentbox.json`:
 
 ```json
 {
+  "$schema": "https://raw.githubusercontent.com/billygoat747/14agentbox/main/14agentbox.schema.json",
   "ports": [
     "8080-8086:8080-8086"
   ],
   "network": "14software_default",
+  "compose_services": [
+    "postgres"
+  ],
   "links": [
     "14software-postgres:postgres"
   ],
@@ -125,8 +142,10 @@ Downstream projects declare their network attachments, container links, and port
 }
 ```
 
-- `"ports"`: Exposed host ports.
+- `"$schema"`: Points to the official JSON schema so IDEs and AI coding agents get immediate autocompletion and type validation.
+- `"ports"`: Exposed host ports (`-p`).
 - `"network"`: Connects to the project's Docker network (e.g. from `docker compose up -d`).
+- `"compose_services"`: Compose services to start before launching the devbox, and stop on exit.
 - `"forward_ports"`: Starts explicit intra-container port forwarders (e.g. `127.0.0.1:5432 -> postgres:5432`).
 
 ---

@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/billygoat747/14agentbox/main/14agentbox.schema.json",
+  "title": "14agentbox Configuration",
+  "description": "Project-specific networking, ports, compose dependencies, and environment configuration for 14agentbox development containers.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "URL to the 14agentbox JSON schema."
+    },
+    "ports": {
+      "type": "array",
+      "description": "Host-to-container port mappings passed to docker run as '-p <port>'. Formats: 'HOST_PORT:CONTAINER_PORT' or 'HOST_PORT:CONTAINER_PORT/PROTOCOL' (e.g. '8080:8080', '25565:25565', '19132:19132/udp').",
+      "items": {
+        "type": "string"
+      },
+      "examples": [
+        ["8080:8080"],
+        ["25565:25565", "19132:19132/udp"]
+      ]
+    },
+    "network": {
+      "type": "string",
+      "description": "Docker network to connect the container to via '--network'. The runner creates it automatically if it does not already exist.",
+      "examples": [
+        "14software_default"
+      ]
+    },
+    "compose_services": {
+      "type": "array",
+      "description": "Services from the project's docker-compose.yml to automatically start (docker compose up -d) before launching the container, and tear down when the container exits.",
+      "items": {
+        "type": "string"
+      },
+      "examples": [
+        ["postgres", "redis"]
+      ]
+    },
+    "forward_ports": {
+      "type": "array",
+      "description": "Intra-container port forward rules started via socat inside the container on 127.0.0.1. Format: 'SRC_PORT:TARGET_HOST:TARGET_PORT'.",
+      "items": {
+        "type": "string"
+      },
+      "examples": [
+        ["5432:postgres:5432"],
+        ["8080:host.docker.internal:8080"]
+      ]
+    },
+    "links": {
+      "type": "array",
+      "description": "Docker container links passed to docker run via '--link'. Format: 'CONTAINER_NAME:ALIAS'.",
+      "items": {
+        "type": "string"
+      },
+      "examples": [
+        ["14software-postgres:postgres"]
+      ]
+    },
+    "extra_hosts": {
+      "type": "array",
+      "description": "Custom host-to-IP mappings added to /etc/hosts via '--add-host'. Format: 'HOSTNAME:IP'.",
+      "items": {
+        "type": "string"
+      },
+      "examples": [
+        ["api.internal:192.168.1.10"]
+      ]
+    },
+    "env": {
+      "type": "object",
+      "description": "Environment variables passed into the container as '-e KEY=VALUE'.",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "examples": [
+        {
+          "DATABASE_HOST": "postgres",
+          "PGHOST": "postgres"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

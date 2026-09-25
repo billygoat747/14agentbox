@@ -10,6 +10,24 @@
         "apiKey": "14agentbox-sandbox-token"
       },
       "models": {
+        "openai/gpt-6-luna": {
+          "name": "OpenAI: GPT-6 Luna",
+          "tool_call": true,
+          "reasoning": true,
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
         "openai/gpt-5.6-luna": {},
         "xiaomi/mimo-v2.6-pro": {
           "name": "Xiaomi: MiMo-V2.6-Pro",
@@ -45,6 +63,44 @@
       "options": {
         "baseURL": "http://host.docker.internal:8040/openai/v1",
         "apiKey": "14agentbox-sandbox-token"
+      },
+      "models": {
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna",
+          "tool_call": true,
+          "reasoning": true,
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        },
+        "gpt-5.6-luna": {
+          "name": "GPT-5.6 Luna",
+          "tool_call": true,
+          "reasoning": true,
+          "limit": {
+            "context": 1050000,
+            "output": 128000
+          },
+          "modalities": {
+            "input": [
+              "text",
+              "image"
+            ],
+            "output": [
+              "text"
+            ]
+          }
+        }
       }
     },
     "google": {

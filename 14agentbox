@@ -46,6 +46,7 @@ show_help() {
 Usage: 14agentbox [OPTIONS] [PROJECT_DIR] [--] [COMMAND...]
 
 Options:
+  --init           Initialize a 14agentbox.json config template in the target directory
   --build-base     Build or rebuild the 14agentbox:base image
   --clean          Reset cached session state for the specified project/branch
   --sessions       List all cached project sessions on this machine
@@ -54,6 +55,7 @@ Options:
 
 Examples:
   14agentbox                             # Run in current directory, drop into bash
+  14agentbox --init                      # Initialize 14agentbox.json in current directory
   14agentbox /path/to/project            # Run in target directory, drop into bash
   14agentbox /path/to/project agy        # Run Antigravity CLI in target project
   14agentbox /path/to/project opencode   # Run OpenCode in target project
@@ -65,6 +67,32 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
       show_help
+      exit 0
+      ;;
+    --init)
+      shift
+      TARGET="${1:-.}"
+      if [ -n "${1:-}" ] && [ ! -d "$TARGET" ]; then
+        echo "[14agentbox] Error: Target directory '$TARGET' does not exist."
+        exit 1
+      fi
+      RESOLVED="$(cd "$TARGET" && pwd -P)"
+      INIT_FILE="$RESOLVED/14agentbox.json"
+      if [ -f "$INIT_FILE" ]; then
+        echo "[14agentbox] Error: $INIT_FILE already exists."
+        exit 1
+      fi
+      cat << 'EOF' > "$INIT_FILE"
+{
+  "$schema": "https://raw.githubusercontent.com/billygoat747/14agentbox/main/14agentbox.schema.json",
+  "ports": [],
+  "network": "",
+  "compose_services": [],
+  "forward_ports": [],
+  "env": {}
+}
+EOF
+      echo "[14agentbox] Initialized $INIT_FILE"
       exit 0
       ;;
     --build-base)

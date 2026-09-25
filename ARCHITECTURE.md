@@ -105,7 +105,7 @@ At container start, `docker/entrypoint.sh` queries `/providers` and LiteLLM's `/
 `~/.config/opencode/generated.json` (exported as `OPENCODE_CONFIG`):
 - Providers without a key are added to `disabled_providers`; the Exa MCP server is disabled without `EXA_API_KEY`.
 - LiteLLM chat models (with context/output limits) are listed automatically, so new models appear without a rebuild.
-- If the default model's provider is disabled, the default switches to a LiteLLM model.
+- If the default model's provider is disabled, the default switches to LiteLLM, OpenAI (e.g. GPT-6 Luna), or Google based on which keys are configured.
 - If the proxy is unreachable (e.g. `--direct-env`), the baked-in `opencode.json` is used unchanged.
 - Shuts down when container execution terminates.
 

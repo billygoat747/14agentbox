@@ -88,8 +88,14 @@ if curl -fsS -m 3 -o "$DISCOVERY_DIR/providers.json" "$PROXY_URL/providers" 2>/d
             mcp: { exa: { enabled: ($keys.exa == true) } }
           }
         | (($base[0].model // "") | split("/")[0]) as $default_provider
-        | if ($disabled | index($default_provider)) and ($chat | length) > 0 then
-              .model = "litellm/" + ((first($chat[] | select(.model_name | test("sonnet"))) // $chat[0]).model_name)
+        | if ($disabled | index($default_provider)) then
+              if ($chat | length) > 0 then
+                  .model = "litellm/" + ((first($chat[] | select(.model_name | test("sonnet"))) // $chat[0]).model_name)
+              elif ($keys.openai == true) then
+                  .model = "openai/gpt-6-luna"
+              elif ($keys.google == true) then
+                  .model = "google/gemini-2.5-pro"
+              else . end
           else . end
     ' > "$GEN_CONFIG" 2>/dev/null; then
         export OPENCODE_CONFIG="$GEN_CONFIG"
