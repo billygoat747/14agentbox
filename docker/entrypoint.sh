@@ -21,7 +21,10 @@ if [ ! -s /home/dev/.gemini/config/mcp_config.json ]; then
   "mcpServers": {
     "exa": {
       "disabled": false,
-      "serverUrl": "http://host.docker.internal:8040/mcp/exa"
+      "serverUrl": "http://host.docker.internal:8040/mcp/exa",
+      "headers": {
+        "x-api-key": "14agentbox-sandbox-token"
+      }
     }
   }
 }
@@ -54,14 +57,15 @@ fi
 # listed from its /model/info endpoint so new models appear without a rebuild.
 # If the proxy is unreachable (e.g. --direct-env), the baked-in config is used.
 PROXY_URL="${AGENTBOX_PROXY_URL:-http://host.docker.internal:8040}"
+SANDBOX_TOKEN="${AGENTBOX_SANDBOX_TOKEN:-14agentbox-sandbox-token}"
 BASE_CONFIG=/home/dev/.config/opencode/opencode.json
 GEN_CONFIG=/home/dev/.config/opencode/generated.json
 # Responses go through temp files: /model/info can be hundreds of KB, which
 # exceeds Linux's 128 KB limit for a single command-line argument.
 DISCOVERY_DIR=$(mktemp -d)
-if curl -fsS -m 3 -o "$DISCOVERY_DIR/providers.json" "$PROXY_URL/providers" 2>/dev/null; then
+if curl -fsS -m 3 -H "Authorization: Bearer $SANDBOX_TOKEN" -o "$DISCOVERY_DIR/providers.json" "$PROXY_URL/providers" 2>/dev/null; then
     if [ "$(jq -r '.providers.litellm' "$DISCOVERY_DIR/providers.json")" != "true" ] \
-        || ! curl -fsS -m 10 -o "$DISCOVERY_DIR/model_info.json" "$PROXY_URL/litellm/model/info" 2>/dev/null; then
+        || ! curl -fsS -m 10 -H "Authorization: Bearer $SANDBOX_TOKEN" -o "$DISCOVERY_DIR/model_info.json" "$PROXY_URL/litellm/model/info" 2>/dev/null; then
         echo '{"data":[]}' > "$DISCOVERY_DIR/model_info.json"
     fi
     if jq -n --slurpfile p "$DISCOVERY_DIR/providers.json" --slurpfile info "$DISCOVERY_DIR/model_info.json" --slurpfile base "$BASE_CONFIG" '

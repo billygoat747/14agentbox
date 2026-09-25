@@ -21,6 +21,29 @@ import urllib.request
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8040
 
+# Dummy sandbox token expected from clients inside the container.
+SANDBOX_TOKEN = os.environ.get("AGENTBOX_SANDBOX_TOKEN", "14agentbox-sandbox-token")
+
+
+def strip_sandbox_token_query(path):
+    """Strip sandbox dummy token from query parameters so upstream never sees it."""
+    if "?" not in path:
+        return path
+    base_path, query_str = path.split("?", 1)
+    qs = urllib.parse.parse_qs(query_str, keep_blank_values=True)
+    changed = False
+    for qk in list(qs.keys()):
+        orig_len = len(qs[qk])
+        qs[qk] = [v for v in qs[qk] if v != SANDBOX_TOKEN]
+        if len(qs[qk]) != orig_len:
+            changed = True
+        if not qs[qk]:
+            del qs[qk]
+    if not changed:
+        return path
+    new_query = urllib.parse.urlencode(qs, doseq=True)
+    return f"{base_path}?{new_query}" if new_query else base_path
+
 # Env vars that hold each provider's key. Only whether a key is present is ever
 # reported to the container (via /providers); key values never leave the host.
 PROVIDER_KEYS = {
@@ -115,7 +138,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         # OpenRouter routing: /openrouter/* -> https://openrouter.ai/*
         if path.startswith("/openrouter/"):
-            target_path = path[len("/openrouter"):]
+            target_path = strip_sandbox_token_query(path[len("/openrouter"):])
             target_url = "https://openrouter.ai" + target_path
             api_key = env.get("OPENROUTER_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
             if api_key:
@@ -126,7 +149,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         # OpenAI routing: /openai/* -> https://api.openai.com/*
         if path.startswith("/openai/"):
-            target_path = path[len("/openai"):]
+            target_path = strip_sandbox_token_query(path[len("/openai"):])
             target_url = "https://api.openai.com" + target_path
             api_key = env.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
             if api_key:
@@ -138,7 +161,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             base_url = env_value(env, "LITELLM_BASE_URL").rstrip("/")
             if not base_url:
                 return None, None, False
-            target_path = path[len("/litellm"):]
+            target_path = strip_sandbox_token_query(path[len("/litellm"):])
             target_url = base_url + target_path
             api_key = env.get("LITELLM_API_KEY") or os.environ.get("LITELLM_API_KEY", "")
             if api_key:
@@ -150,6 +173,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             target_path = path[len("/google"):]
             if not (target_path.startswith("/v1/") or target_path.startswith("/v1beta/")):
                 target_path = "/v1beta" + target_path
+            target_path = strip_sandbox_token_query(target_path)
             target_url = "https://generativelanguage.googleapis.com" + target_path
             api_key = env.get("GOOGLEAI_API_KEY") or env.get("GEMINI_API_KEY") or os.environ.get("GOOGLEAI_API_KEY", "")
             if api_key:
@@ -158,7 +182,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         # Exa MCP routing: /mcp/exa* -> https://mcp.exa.ai/mcp*
         if path.startswith("/mcp/exa"):
-            target_path = path[len("/mcp/exa"):]
+            target_path = strip_sandbox_token_query(path[len("/mcp/exa"):])
             target_url = "https://mcp.exa.ai/mcp" + target_path
             api_key = env.get("EXA_API_KEY") or os.environ.get("EXA_API_KEY", "")
             if api_key:
@@ -213,27 +237,61 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             finally:
                 resp.close()
 
+    def _is_authenticated(self):
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header:
+            parts = auth_header.split()
+            token = parts[-1] if parts else ""
+            if token == SANDBOX_TOKEN:
+                return True
+
+        if self.headers.get("x-api-key") == SANDBOX_TOKEN:
+            return True
+
+        if self.headers.get("x-goog-api-key") == SANDBOX_TOKEN:
+            return True
+
+        # Check query parameters for token (e.g. ?key=... or ?apiKey=...)
+        parsed = urllib.parse.urlparse(self.path)
+        qs = urllib.parse.parse_qs(parsed.query)
+        for key in ("key", "apiKey", "token", "sandbox_token"):
+            if SANDBOX_TOKEN in qs.get(key, []):
+                return True
+
+        return False
+
     def _handle_proxy(self):
-        if self.path == "/providers":
-            payload = json.dumps({"providers": configured_providers(self.server.secrets)}).encode("utf-8")
-            self._send_proxy_response(200, [("Content-Type", "application/json")], payload)
-            return
-
-        target_url, injected_headers, is_health = self._resolve_target(self.path)
-
-        if is_health:
+        # Health check is unauthenticated (used by runner probes and test verification)
+        if self.path == "/health" or self.path.startswith("/health?"):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
-            response = b'{"status":"ok","proxy":"14agentbox-zero-trust"}'
+            response = b'{"status":"ok","proxy":"14agentbox-zero-trust"}\n'
             self.send_header("Content-Length", str(len(response)))
             self.end_headers()
             self.wfile.write(response)
             return
 
+        # Enforce sandbox token authentication on all proxied routes and provider info
+        if not self._is_authenticated():
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            msg = b'{"error":"Unauthorized: Missing or invalid 14agentbox sandbox token"}\n'
+            self.send_header("Content-Length", str(len(msg)))
+            self.end_headers()
+            self.wfile.write(msg)
+            return
+
+        if self.path == "/providers" or self.path.startswith("/providers?"):
+            payload = json.dumps({"providers": configured_providers(self.server.secrets)}).encode("utf-8")
+            self._send_proxy_response(200, [("Content-Type", "application/json")], payload)
+            return
+
+        target_url, injected_headers, _ = self._resolve_target(self.path)
+
         if not target_url:
             self.send_response(404)
             self.send_header("Content-Type", "application/json")
-            msg = b'{"error":"Unknown route in 14agentbox proxy"}'
+            msg = b'{"error":"Unknown route in 14agentbox proxy"}\n'
             self.send_header("Content-Length", str(len(msg)))
             self.end_headers()
             self.wfile.write(msg)

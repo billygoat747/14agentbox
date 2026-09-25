@@ -37,14 +37,30 @@ cleanup_test() {
 }
 trap cleanup_test EXIT INT TERM
 
-# 2. Test Proxy Header Injection
-echo "[TEST] Testing proxy endpoint /openrouter/api/v1/models..."
+# 2. Test Proxy Health & Authentication Verification
+echo "[TEST] Testing proxy endpoint /health..."
 HEALTH_CHECK=$(curl -s http://127.0.0.1:8049/health || echo "FAIL")
 if [[ "$HEALTH_CHECK" != *"14agentbox-zero-trust"* ]]; then
   echo "[-] FAILED: Proxy health check failed: $HEALTH_CHECK"
   exit 1
 fi
-echo "[+] PASSED: Proxy is responding and healthy."
+echo "[+] PASSED: Proxy health check is responding."
+
+echo "[TEST] Testing that unauthenticated requests are rejected with HTTP 401..."
+UNAUTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8049/providers || echo "FAIL")
+if [ "$UNAUTH_CODE" != "401" ]; then
+  echo "[-] FAILED: Expected HTTP 401 for unauthenticated request, got $UNAUTH_CODE"
+  exit 1
+fi
+echo "[+] PASSED: Unauthenticated request rejected with HTTP 401."
+
+echo "[TEST] Testing that requests with sandbox token succeed..."
+AUTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer 14agentbox-sandbox-token" http://127.0.0.1:8049/providers || echo "FAIL")
+if [ "$AUTH_CODE" != "200" ]; then
+  echo "[-] FAILED: Expected HTTP 200 for authenticated request, got $AUTH_CODE"
+  exit 1
+fi
+echo "[+] PASSED: Authenticated request accepted with HTTP 200."
 
 # 3. Test Container Environment Isolation (Run mock container check)
 echo "[TEST] Verifying secrets isolation inside container command..."

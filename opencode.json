@@ -114,6 +114,9 @@
     "exa": {
       "type": "remote",
       "url": "http://host.docker.internal:8040/mcp/exa",
+      "headers": {
+        "x-api-key": "14agentbox-sandbox-token"
+      },
       "enabled": true
     }
   }
