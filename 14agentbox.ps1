@@ -218,7 +218,22 @@ try {
             -RedirectStandardOutput "$ProxyLog" `
             -RedirectStandardError "$ProxyErrLog" `
             -PassThru -NoNewWindow
-        Start-Sleep -Milliseconds 400
+        # Python cold starts on Windows can take several seconds (e.g. AV scans).
+        # The container's entrypoint discovers providers/models from the proxy, so
+        # it must be listening before the container starts.
+        $ProxyReady = $false
+        $Deadline = (Get-Date).AddSeconds(20)
+        while (-not $ProxyReady -and (Get-Date) -lt $Deadline -and -not $ProxyProcess.HasExited) {
+            try {
+                $null = Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 "http://127.0.0.1:8040/health"
+                $ProxyReady = $true
+            } catch {
+                Start-Sleep -Milliseconds 200
+            }
+        }
+        if (-not $ProxyReady) {
+            Write-Warning "[14agentbox] Credential proxy is not responding on port 8040 (see $ProxyErrLog)."
+        }
     } elseif ($DirectEnv -and (Test-Path $EnvFile)) {
         Write-Host "[14agentbox] Direct environment mode active."
         $DockerArgs += @("--env-file", $EnvFile)

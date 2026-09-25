@@ -63,7 +63,7 @@ GEN_CONFIG=/home/dev/.config/opencode/generated.json
 # Responses go through temp files: /model/info can be hundreds of KB, which
 # exceeds Linux's 128 KB limit for a single command-line argument.
 DISCOVERY_DIR=$(mktemp -d)
-if curl -fsS -m 3 -H "Authorization: Bearer $SANDBOX_TOKEN" -o "$DISCOVERY_DIR/providers.json" "$PROXY_URL/providers" 2>/dev/null; then
+if curl -fsS -m 3 --retry 3 --retry-connrefused --retry-delay 1 -H "Authorization: Bearer $SANDBOX_TOKEN" -o "$DISCOVERY_DIR/providers.json" "$PROXY_URL/providers" 2>/dev/null; then
     if [ "$(jq -r '.providers.litellm' "$DISCOVERY_DIR/providers.json")" != "true" ] \
         || ! curl -fsS -m 10 -H "Authorization: Bearer $SANDBOX_TOKEN" -o "$DISCOVERY_DIR/model_info.json" "$PROXY_URL/litellm/model/info" 2>/dev/null; then
         echo '{"data":[]}' > "$DISCOVERY_DIR/model_info.json"

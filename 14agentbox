@@ -265,8 +265,13 @@ else
     echo "[14agentbox] Starting Zero-Trust Credential Proxy on host..."
     python3 "$SCRIPT_DIR/proxy.py" --env-file "$ENV_FILE" --port 8040 > "$SCRIPT_DIR/proxy.log" 2>&1 &
     PROXY_PID=$!
-    # Brief pause to allow proxy port binding
-    sleep 0.5
+    # The container's entrypoint discovers providers/models from the proxy, so
+    # wait until it is listening before starting the container.
+    for _ in $(seq 1 100); do
+      curl -fsS -m 1 -o /dev/null "http://127.0.0.1:8040/health" 2>/dev/null && break
+      kill -0 "$PROXY_PID" 2>/dev/null || break
+      sleep 0.2
+    done
   fi
 fi
 
