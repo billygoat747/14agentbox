@@ -256,6 +256,8 @@ try {
     docker run --rm -it `
         --name "$ContainerName" `
         --add-host host.docker.internal:host-gateway `
+        -e TERM=xterm-256color `
+        -e COLORTERM=truecolor `
         -v "${TargetDir}:/workspace" `
         -v "${SessionDir}\opencode:/home/dev/.local" `
         -v "${SessionDir}\antigravity:/home/dev/.gemini" `

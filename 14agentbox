@@ -300,6 +300,8 @@ fi
 docker run --rm -it \
   --name "$CONTAINER_NAME" \
   --add-host host.docker.internal:host-gateway \
+  -e TERM="${TERM:-xterm-256color}" \
+  -e COLORTERM="${COLORTERM:-truecolor}" \
   -v "$PROJECT_DIR:/workspace" \
   -v "$SESSION_DIR/opencode:/home/dev/.local" \
   -v "$SESSION_DIR/antigravity:/home/dev/.gemini" \

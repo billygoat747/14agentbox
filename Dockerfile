@@ -51,6 +51,10 @@ RUN if id -u ubuntu >/dev/null 2>&1; then \
 # Copy default OpenCode configuration into image
 COPY --chown=dev:dev opencode.json /home/dev/.config/opencode/opencode.json
 
+# Interactive shell helpers (terminal reset after TUIs exit)
+COPY docker/bashrc-tui.sh /tmp/bashrc-tui.sh
+RUN sed 's/\r$//' /tmp/bashrc-tui.sh >> /etc/bash.bashrc && rm /tmp/bashrc-tui.sh
+
 # Copy container entrypoint
 COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
