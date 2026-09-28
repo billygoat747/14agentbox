@@ -37,6 +37,12 @@ RUN sed -i 's/\r$//' /usr/local/bin/agy \
     && ln -s /usr/local/bin/agy /usr/local/bin/antigravity \
     && agy --version
 
+# Write-only host clipboard bridge, under the names OpenCode and other tools look for
+COPY docker/clipboard-shim.sh /usr/local/bin/14agentbox-copy
+RUN sed -i 's/\r$//' /usr/local/bin/14agentbox-copy \
+    && chmod 755 /usr/local/bin/14agentbox-copy \
+    && for tool in xclip xsel wl-copy wl-paste; do ln -s 14agentbox-copy "/usr/local/bin/$tool"; done
+
 # Non-root developer user with passwordless sudo (UID 1000)
 RUN if id -u ubuntu >/dev/null 2>&1; then \
         usermod -l dev ubuntu && groupmod -n dev ubuntu && usermod -d /home/dev -m dev; \

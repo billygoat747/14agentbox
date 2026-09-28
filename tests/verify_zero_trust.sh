@@ -26,8 +26,10 @@ GOOGLEAI_API_KEY=$CANARY_GOOGLE
 EXA_API_KEY=$CANARY_EXA
 EOF
 
+CLIPBOARD_TOKEN="test-clipboard-token-$$"
+
 echo "[TEST] Starting proxy with canary secrets..."
-python3 "$BOX_DIR/proxy.py" --env-file "$TEST_ENV" --port 8049 >/dev/null 2>&1 &
+AGENTBOX_CLIPBOARD_TOKEN="$CLIPBOARD_TOKEN" python3 "$BOX_DIR/proxy.py" --env-file "$TEST_ENV" --port 8049 >/dev/null 2>&1 &
 PROXY_PID=$!
 sleep 0.5
 
@@ -61,6 +63,28 @@ if [ "$AUTH_CODE" != "200" ]; then
   exit 1
 fi
 echo "[+] PASSED: Authenticated request accepted with HTTP 200."
+
+# Clipboard bridge: per-session token only, write-only, size-capped.
+# These checks never succeed at writing, so the host clipboard is untouched.
+echo "[TEST] Testing clipboard bridge authentication and write-only behavior..."
+CLIP_URL=http://127.0.0.1:8049/clipboard
+expect_code() {
+  local expected="$1" label="$2"; shift 2
+  local code
+  code=$(curl -s -o /dev/null -w "%{http_code}" "$@" || echo "FAIL")
+  if [ "$code" != "$expected" ]; then
+    echo "[-] FAILED: $label: expected HTTP $expected, got $code"
+    exit 1
+  fi
+}
+expect_code 401 "clipboard without token" -X POST --data-binary x "$CLIP_URL"
+expect_code 401 "clipboard with public sandbox token" -X POST \
+  -H "Authorization: Bearer 14agentbox-sandbox-token" \
+  -H "X-Clipboard-Token: 14agentbox-sandbox-token" --data-binary x "$CLIP_URL"
+expect_code 405 "clipboard GET (read)" -H "X-Clipboard-Token: $CLIPBOARD_TOKEN" "$CLIP_URL"
+expect_code 413 "clipboard payload over 1 MiB" -X POST -H "X-Clipboard-Token: $CLIPBOARD_TOKEN" \
+  --data-binary @<(head -c 1100000 /dev/zero | tr '\0' a) "$CLIP_URL"
+echo "[+] PASSED: Clipboard bridge rejects public/missing tokens, reads, and oversize payloads."
 
 # 3. Test Container Environment Isolation (Run mock container check)
 echo "[TEST] Verifying secrets isolation inside container command..."

@@ -201,8 +201,13 @@ $ProxyProcess = $null
 $EnvFile = Join-Path $ScriptDir ".env"
 
 try {
-    if (-not $DirectEnv -and (Test-Path $EnvFile)) {
+    # The proxy also serves the host clipboard bridge, so it runs even without
+    # a .env (then no provider keys are configured).
+    if (-not $DirectEnv) {
         Write-Host "[14agentbox] Starting Zero-Trust Credential Proxy on host..."
+        $ClipboardToken = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
+        $env:AGENTBOX_CLIPBOARD_TOKEN = $ClipboardToken
+        $DockerArgs += @("-e", "AGENTBOX_CLIPBOARD_TOKEN=$ClipboardToken")
         # Keep proxy stdout/stderr out of the interactive console (they would
         # stomp full-screen TUIs like OpenCode). PS 5.1 Start-Process requires
         # distinct redirect files, and logs live under $env:TEMP so the repo
@@ -270,6 +275,7 @@ try {
     if ($ProxyProcess -and -not $ProxyProcess.HasExited) {
         Stop-Process -Id $ProxyProcess.Id -Force -ErrorAction SilentlyContinue
     }
+    Remove-Item Env:AGENTBOX_CLIPBOARD_TOKEN -ErrorAction SilentlyContinue
     if ($Config.compose_services -and (Test-Path "$TargetDir\docker-compose.yml")) {
         Write-Host "[14agentbox] Tearing down project compose dependencies..."
         Invoke-NativeProbe { docker compose -f "$TargetDir\docker-compose.yml" down --remove-orphans 2>$null } | Out-Null

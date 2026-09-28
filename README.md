@@ -167,6 +167,16 @@ To list all active sessions on disk:
 
 ---
 
+## 📋 Copying to the Host Clipboard
+
+Highlight text in OpenCode (or use its copy actions) and it lands in your **host** clipboard; paste with Cmd+V / Ctrl+V. From a container shell, pipe into `xclip`, `wl-copy`, or `14agentbox-copy`:
+```bash
+git diff | 14agentbox-copy
+```
+The bridge is write-only: the container cannot read your host clipboard. It goes through the host proxy with a per-session token, so it is unavailable in `--direct-env` mode. See [ARCHITECTURE.md](ARCHITECTURE.md#host-clipboard-bridge-clipboard).
+
+---
+
 ## 🔒 Security & Guardrails
 
 See [AGENTS.md](AGENTS.md) and [ARCHITECTURE.md](ARCHITECTURE.md) for full security invariants.

@@ -7,10 +7,13 @@ from the host .env file, ensuring secrets never enter the Docker container.
 """
 
 import argparse
+import hmac
 import http.server
 import json
 import os
+import shutil
 import socketserver
+import subprocess
 import sys
 import time
 import urllib.error
@@ -23,6 +26,26 @@ DEFAULT_PORT = 8040
 
 # Dummy sandbox token expected from clients inside the container.
 SANDBOX_TOKEN = os.environ.get("AGENTBOX_SANDBOX_TOKEN", "14agentbox-sandbox-token")
+
+# Per-session random token for /clipboard. The sandbox token is public and the
+# proxy binds 0.0.0.0, so clipboard writes need a secret only this session knows.
+CLIPBOARD_TOKEN = os.environ.get("AGENTBOX_CLIPBOARD_TOKEN", "")
+CLIPBOARD_MAX_BYTES = 1024 * 1024
+
+
+def set_host_clipboard(text):
+    """Write text to the host clipboard. Write-only: never read it back to the container."""
+    if sys.platform == "darwin":
+        env = dict(os.environ, LANG="en_US.UTF-8", LC_ALL="en_US.UTF-8")
+        subprocess.run(["pbcopy"], input=text.encode("utf-8"), env=env, check=True, timeout=5)
+    elif os.name == "nt":
+        subprocess.run(["clip.exe"], input=("\ufeff" + text).encode("utf-16-le"), check=True, timeout=5)
+    elif shutil.which("wl-copy") and os.environ.get("WAYLAND_DISPLAY"):
+        subprocess.run(["wl-copy"], input=text.encode("utf-8"), check=True, timeout=5)
+    elif shutil.which("xclip"):
+        subprocess.run(["xclip", "-selection", "clipboard"], input=text.encode("utf-8"), check=True, timeout=5)
+    else:
+        raise RuntimeError("no host clipboard tool available")
 
 
 def strip_sandbox_token_query(path):
@@ -260,6 +283,52 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         return False
 
+    def _send_json(self, status, payload):
+        body = json.dumps(payload).encode("utf-8") + b"\n"
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _handle_clipboard(self):
+        # Unread request bodies would corrupt the next request on this keep-alive connection.
+        self.close_connection = True
+        if not CLIPBOARD_TOKEN:
+            self._send_json(404, {"error": "Clipboard bridge is not enabled for this session"})
+            return
+        if not hmac.compare_digest(self.headers.get("X-Clipboard-Token", ""), CLIPBOARD_TOKEN):
+            self._send_json(401, {"error": "Unauthorized: Missing or invalid clipboard token"})
+            return
+        if self.command != "POST":
+            self._send_json(405, {"error": "Clipboard is write-only; use POST"})
+            return
+        if self.headers.get("Transfer-Encoding"):
+            self._send_json(411, {"error": "Clipboard payload requires Content-Length"})
+            return
+        try:
+            content_length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            content_length = -1
+        if content_length < 0 or content_length > CLIPBOARD_MAX_BYTES:
+            self._send_json(413, {"error": f"Clipboard payload must be at most {CLIPBOARD_MAX_BYTES} bytes"})
+            return
+        try:
+            text = self.rfile.read(content_length).decode("utf-8")
+        except UnicodeDecodeError:
+            self._send_json(400, {"error": "Clipboard payload must be UTF-8 text"})
+            return
+        try:
+            set_host_clipboard(text)
+        except Exception as e:
+            self._log(f"clipboard write failed: {e}")
+            self._send_json(500, {"error": "Failed to write host clipboard"})
+            return
+        self._log(f"clipboard write {len(text)} chars")
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _handle_proxy(self):
         # Health check is unauthenticated (used by runner probes and test verification)
         if self.path == "/health" or self.path.startswith("/health?"):
@@ -269,6 +338,10 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(response)))
             self.end_headers()
             self.wfile.write(response)
+            return
+
+        if self.path == "/clipboard" or self.path.startswith("/clipboard?"):
+            self._handle_clipboard()
             return
 
         # Enforce sandbox token authentication on all proxied routes and provider info

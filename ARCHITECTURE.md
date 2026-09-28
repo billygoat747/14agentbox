@@ -109,6 +109,21 @@ At container start, `docker/entrypoint.sh` queries `/providers` and LiteLLM's `/
 - If the proxy is unreachable (e.g. `--direct-env`), the baked-in `opencode.json` is used unchanged.
 - Shuts down when container execution terminates.
 
+### Host Clipboard Bridge (`/clipboard`)
+
+OpenCode on Linux copies by piping text to `xclip`/`wl-copy`/`xsel`. The basebox installs
+`docker/clipboard-shim.sh` under those names, and the shim POSTs stdin to the proxy's `/clipboard`
+route, which writes the host clipboard (`pbcopy` on macOS, `clip.exe` on Windows, `wl-copy`/`xclip`
+on Linux). This works in terminals without OSC 52 support (macOS Terminal.app, Windows CMD).
+- **Write-only**: there is no read route; `xclip -o`, `xsel -o`, and `wl-paste` exit non-zero, so the
+  sandbox can never read what the user copies on the host.
+- **Per-session token**: the launcher generates a random `AGENTBOX_CLIPBOARD_TOKEN`, passes it to the
+  proxy's process environment and to the container via `-e`. The public sandbox token is rejected,
+  since the proxy binds `0.0.0.0`. The token is not a provider secret.
+- **Limits**: `POST` only, UTF-8 text, at most 1 MiB.
+- The proxy starts even without a host `.env` so the clipboard works with no keys configured.
+  With `--direct-env` there is no proxy, and the shims fail with an error.
+
 ---
 
 ## 5. Explicit Project Network Mapping (`14agentbox.json`)
